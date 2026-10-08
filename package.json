@@ -1,0 +1,32 @@
+{
+  "name": "authy-cli",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A TypeScript CLI and SDK.",
+  "type": "module",
+  "bin": {
+    "authy": "dist/authy.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/sdk.d.ts",
+      "import": "./dist/sdk.js"
+    },
+    "./cli": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc && node scripts/create-cli-launchers.mjs",
+    "docker:build": "docker build --tag authy-codex:local .",
+    "start": "npm run build && node dist/authy.js",
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/**/*.test.js",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@docker/node-sdk": "^0.0.17",
+    "commander": "^14.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
