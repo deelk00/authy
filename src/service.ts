@@ -3,6 +3,7 @@ import { type AuthyConfig, type DetailLevel, validateAccountId, validateDetailLe
 import { type AccountListInput, type AccountListResult, type AccountRepository, type AccountSummary, FileAccountRepository, FileArtifactRepository } from "./storage.js";
 import { type ExecutionQueue, InMemoryExecutionQueue } from "./queue.js";
 import { DockerCodexGateway } from "./docker/codex-gateway.js";
+import { WorkspaceManager, validateWorkspaceInput, type ResolvedWorkspace } from "./workspace.js";
 
 export interface LoginInput { headless?: boolean; apiKeyEnv?: string; displayName?: string; signal?: AbortSignal; }
 export interface LoginResult { accountId: string; }
@@ -14,7 +15,7 @@ export interface TokenUsage { lifetimeTokens: number | null; peakDailyTokens: nu
 export interface RateLimitWindow { usedPercent: number; resetsAt: string | null; windowDurationMinutes: number | null; }
 export interface RateLimit { id: string | null; name: string | null; plan: string | null; primary: RateLimitWindow | null; secondary: RateLimitWindow | null; }
 export interface StatusResult { accountId: string; subscription: "active" | "inactive" | "unknown"; checkedAt: string; cached: boolean; tokenUsage: TokenUsage | null; rateLimits: RateLimit[] | null; }
-export interface ExecuteInput { accountId: string; prompt: string; detailLevel?: DetailLevel; timeoutMs?: number; signal?: AbortSignal; }
+export interface ExecuteInput { accountId: string; prompt: string; detailLevel?: DetailLevel; timeoutMs?: number; workspace?: string; readonly?: boolean; signal?: AbortSignal; }
 export interface ExecuteResult { requestId: string; accountId: string; exitCode: number; output: string; }
 export interface ExecuteOutputEvent { type: string; data: Record<string, unknown>; }
 export type AuthyEventName = "login.started" | "login.progress" | "login.completed" | "logout.completed" | "exec.started" | "exec.completed" | `exec.${string}`;
@@ -24,7 +25,7 @@ export type EventSink = (event: AuthyEvent) => void;
 export interface CodexGateway {
   login(input: { headless: boolean; apiKey?: string; signal?: AbortSignal }, onProgress: (progress: LoginProgress) => void): Promise<{ accountId: string; artifacts: ReadonlyMap<string, Uint8Array> }>;
   logout(accountId: string, signal?: AbortSignal): Promise<void>;
-  execute(input: { accountId: string; prompt: string; detailLevel: DetailLevel; timeoutMs: number; signal?: AbortSignal }, onOutput: (event: ExecuteOutputEvent) => void): Promise<{ exitCode: number; output: string }>;
+  execute(input: { accountId: string; prompt: string; detailLevel: DetailLevel; timeoutMs: number; workspace?: ResolvedWorkspace; signal?: AbortSignal }, onOutput: (event: ExecuteOutputEvent) => void): Promise<{ exitCode: number; output: string }>;
   getStatus(accountId: string, signal?: AbortSignal): Promise<Omit<StatusResult, "accountId" | "cached">>;
 }
 class UnavailableCodexGateway implements CodexGateway {
@@ -37,10 +38,11 @@ export interface AuthyService {
   listAccounts(input?: AccountListInput): Promise<AccountListResult>; getAccountSummary(): Promise<AccountSummary>;
   getAccountStatus(accountId: string, signal?: AbortSignal): Promise<StatusResult>; execute(input: ExecuteInput, onEvent?: EventSink): Promise<ExecuteResult>;
 }
-export interface AuthyServiceDependencies { config: AuthyConfig; accounts: AccountRepository; artifacts: FileArtifactRepository; queue: ExecutionQueue<ExecuteInput>; codex?: CodexGateway; now?: () => Date; }
+export interface AuthyServiceDependencies { config: AuthyConfig; accounts: AccountRepository; artifacts: FileArtifactRepository; queue: ExecutionQueue<ExecuteInput>; codex?: CodexGateway; now?: () => Date; workspaces?: WorkspaceManager; }
 export class DefaultAuthyService implements AuthyService {
+  private readonly workspaces: WorkspaceManager;
   private readonly codex: CodexGateway; private readonly now: () => Date; private readonly statusCache = new Map<string, { until: number; value: StatusResult }>();
-  constructor(private readonly deps: AuthyServiceDependencies) { this.codex = deps.codex ?? new UnavailableCodexGateway(); this.now = deps.now ?? (() => new Date()); }
+  constructor(private readonly deps: AuthyServiceDependencies) { this.codex = deps.codex ?? new UnavailableCodexGateway(); this.now = deps.now ?? (() => new Date()); this.workspaces = deps.workspaces ?? new WorkspaceManager(); }
   async login(input: LoginInput, onEvent?: EventSink): Promise<LoginResult> {
     if (input.headless && input.apiKeyEnv) throw new UsageError("headless and apiKeyEnv cannot be used together."); if (input.apiKeyEnv && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(input.apiKeyEnv)) throw new UsageError("apiKeyEnv must name an environment variable.");
     const apiKey = input.apiKeyEnv ? process.env[input.apiKeyEnv] : undefined; if (input.apiKeyEnv && !apiKey) throw new ConfigurationError("The configured API key environment variable is missing."); if (input.signal?.aborted) throw new OperationCancelledError("The operation was cancelled.");
@@ -51,7 +53,27 @@ export class DefaultAuthyService implements AuthyService {
   listAccounts(input: AccountListInput = {}): Promise<AccountListResult> { return this.deps.accounts.list(input); }
   async getAccountSummary(): Promise<AccountSummary> { const list = await this.deps.accounts.list({ skip: 0, take: this.deps.config.maxListTake }); return { count: list.total }; }
   async getAccountStatus(accountId: string, signal?: AbortSignal): Promise<StatusResult> { accountId = validateAccountId(accountId); if (!(await this.deps.accounts.get(accountId))) throw new ConfigurationError("The requested account does not exist."); const cached = this.statusCache.get(accountId); if (cached && cached.until > Date.now()) return { ...cached.value, cached: true }; const result = await this.codex.getStatus(accountId, signal); const value = { accountId, ...result, cached: false }; this.statusCache.set(accountId, { until: Date.now() + this.deps.config.statusCacheTtlMs, value }); return value; }
-  async execute(input: ExecuteInput, onEvent?: EventSink): Promise<ExecuteResult> { const accountId = validateAccountId(input.accountId); if (!(await this.deps.accounts.get(accountId))) throw new ConfigurationError("The requested account does not exist."); if (!input.prompt || input.prompt.trim().length > 100_000) throw new UsageError("prompt must contain between 1 and 100000 characters."); const detailLevel = validateDetailLevel(input.detailLevel ?? "end"), timeoutMs = input.timeoutMs ?? this.deps.config.defaultTimeoutMs; if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new UsageError("timeoutMs must be a positive integer."); const lease = await this.deps.queue.enqueue(accountId, { ...input, accountId, detailLevel, timeoutMs }, input.signal); try { const result = await this.codex.execute({ accountId, prompt: input.prompt, detailLevel, timeoutMs, signal: input.signal }, (event) => onEvent?.({ event: execEventName(event.type), data: { requestId: lease.job.requestId, accountId, ...event.data, ...(isKnownExecEvent(event.type) ? {} : { sourceType: event.type }) } })); const output = { requestId: lease.job.requestId, accountId, ...result }; lease.complete(); return output; } catch (error) { lease.fail(); throw error; } }
+  async execute(input: ExecuteInput, onEvent?: EventSink): Promise<ExecuteResult> {
+    const accountId = validateAccountId(input.accountId);
+    if (!(await this.deps.accounts.get(accountId))) throw new ConfigurationError("The requested account does not exist.");
+    if (!input.prompt || input.prompt.trim().length > 100_000) throw new UsageError("prompt must contain between 1 and 100000 characters.");
+    const detailLevel = validateDetailLevel(input.detailLevel ?? "end");
+    const timeoutMs = input.timeoutMs ?? this.deps.config.defaultTimeoutMs;
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new UsageError("timeoutMs must be a positive integer.");
+    validateWorkspaceInput(input);
+    if (input.signal?.aborted) throw new OperationCancelledError("The operation was cancelled.");
+    const workspace = input.workspace === undefined ? undefined : await this.workspaces.resolve(input.workspace, input.readonly ?? false);
+    const lease = await this.deps.queue.enqueue(accountId, { ...input, accountId, detailLevel, timeoutMs }, input.signal);
+    try {
+      const result = await this.codex.execute({ accountId, prompt: input.prompt, detailLevel, timeoutMs, workspace, signal: input.signal }, (event) => onEvent?.({
+        event: execEventName(event.type),
+        data: { requestId: lease.job.requestId, accountId, ...event.data, ...(isKnownExecEvent(event.type) ? {} : { sourceType: event.type }) }
+      }));
+      const output = { requestId: lease.job.requestId, accountId, ...result };
+      lease.complete();
+      return output;
+    } catch (error) { lease.fail(); throw error; }
+  }
 }
 
 function execEventName(type: string): AuthyEventName {
@@ -69,4 +91,4 @@ function execEventName(type: string): AuthyEventName {
 function isKnownExecEvent(type: string): boolean {
   return execEventName(type) !== "exec.event";
 }
-export function createAuthyService(config: AuthyConfig, overrides: Partial<Omit<AuthyServiceDependencies, "config" | "accounts" | "artifacts" | "queue">> & { accounts?: AccountRepository; artifacts?: FileArtifactRepository; queue?: ExecutionQueue<ExecuteInput> } = {}): AuthyService { const accounts = overrides.accounts ?? new FileAccountRepository(config.storageDirectory, config.maxListTake); return new DefaultAuthyService({ config, accounts, artifacts: overrides.artifacts ?? new FileArtifactRepository(config.storageDirectory, config.authArtifacts, config.maxArtifactBytes), queue: overrides.queue ?? new InMemoryExecutionQueue(config.leaseMs, config.queueWindowMs), codex: overrides.codex ?? new DockerCodexGateway(config), now: overrides.now }); }
+export function createAuthyService(config: AuthyConfig, overrides: Partial<Omit<AuthyServiceDependencies, "config" | "accounts" | "artifacts" | "queue">> & { accounts?: AccountRepository; artifacts?: FileArtifactRepository; queue?: ExecutionQueue<ExecuteInput> } = {}): AuthyService { const accounts = overrides.accounts ?? new FileAccountRepository(config.storageDirectory, config.maxListTake); return new DefaultAuthyService({ config, accounts, artifacts: overrides.artifacts ?? new FileArtifactRepository(config.storageDirectory, config.authArtifacts, config.maxArtifactBytes), queue: overrides.queue ?? new InMemoryExecutionQueue(config.leaseMs, config.queueWindowMs), codex: overrides.codex ?? new DockerCodexGateway(config), now: overrides.now, workspaces: overrides.workspaces }); }

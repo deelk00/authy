@@ -61,6 +61,17 @@ class FakeDockerApi implements DockerApi {
 }
 
 describe("DockerService", () => {
+  it("maps bind mounts and read-only access without changing named volume defaults", async () => {
+    const api = new FakeDockerApi();
+    await new DockerService(api).createContainer({ image: "test", volumes: [
+      { source: "authy-auth", target: "/auth" },
+      { type: "bind", source: "C:\\Projects\\my repo", target: "/workspace", readOnly: true }
+    ] });
+    assert.deepEqual(api.createdContainer?.HostConfig?.Mounts, [
+      { Type: "volume", Source: "authy-auth", Target: "/auth", ReadOnly: false },
+      { Type: "bind", Source: "C:\\Projects\\my repo", Target: "/workspace", ReadOnly: true }
+    ]);
+  });
   it("maps volume and container requests to the Docker SDK", async () => {
     const api = new FakeDockerApi();
     const service = new DockerService(api);

@@ -6,3 +6,4 @@ export * from "./service.js";
 export * from "./docker/index.js";
 export * from "./api.js";
 export * from "./client.js";
+export * from "./workspace.js";

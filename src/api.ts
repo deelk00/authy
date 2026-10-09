@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { asAppError, DependencyUnavailableError, UsageError } from "./errors.js";
 import type { AccountListInput } from "./storage.js";
 import type { AuthyEvent, AuthyService, ExecuteInput, LoginInput } from "./service.js";
+import { validateWorkspaceInput } from "./workspace.js";
 
 export const DEFAULT_API_HOST = "127.0.0.1";
 export const DEFAULT_API_PORT = 8787;
@@ -127,8 +128,11 @@ function executeInput(body: Record<string, unknown>): ExecuteInput {
   const prompt = requiredValue(body, "prompt", "string");
   const detailLevel = optionalValue(body, "detailLevel", "string");
   const timeoutMs = optionalValue(body, "timeoutMs", "number");
+  const workspace = optionalValue(body, "workspace", "string");
+  const readonly = optionalValue(body, "readonly", "boolean");
+  validateWorkspaceInput({ workspace, readonly });
   if (timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1)) throw new UsageError("timeoutMs must be a positive integer.");
-  return { accountId, prompt, detailLevel, timeoutMs } as ExecuteInput;
+  return { accountId, prompt, detailLevel, timeoutMs, workspace, readonly } as ExecuteInput;
 }
 
 function optionalValue<T extends "string" | "number" | "boolean">(body: Record<string, unknown>, name: string, type: T): T extends "string" ? string | undefined : T extends "number" ? number | undefined : boolean | undefined {

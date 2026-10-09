@@ -19,3 +19,20 @@ Node-Prozess aus. `cli` startet den konfigurierten `authy`-Befehl in einem
 separaten Prozess und übersetzt dessen JSON Lines. `api` ruft den HTTP-Server
 über `baseUrl` auf. `login` und `execute` liefern Ereignisse über einen
 optionalen Event-Callback; das Abschlussresultat wird als Promise zurückgegeben.
+
+`execute` akzeptiert in allen Backends dieselben Workspace-Optionen:
+
+```ts
+await authy.execute({
+  accountId: "ada",
+  prompt: "Prüfe den Code",
+  workspace: "file:///C:/Projects/repo",
+  readonly: true
+});
+```
+
+Ohne `workspace` sind Dateitools deaktiviert. Mit `workspace` ist der Zugriff
+standardmäßig lesend und schreibend; `readonly: true` schützt den Mount und
+aktiviert die Read-only-Sandbox. Die Auflösung findet im Engine-Prozess statt,
+bei `api` also auf dem Server. Details und Migration stehen bei
+[`authy exec`](../commands/exec.md).

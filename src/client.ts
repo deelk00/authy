@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { ConfigurationError, DependencyUnavailableError, OperationCancelledError, RuntimeError, UsageError } from "./errors.js";
 import { validateConfig, type AuthyConfig } from "./config.js";
+import { validateWorkspaceInput } from "./workspace.js";
 import type { AccountListInput, AccountListResult, AccountSummary } from "./storage.js";
 import { createAuthyService, type AuthyEvent, type AuthyService, type EventSink, type ExecuteInput, type ExecuteResult, type LoginInput, type LoginResult, type LogoutInput, type LogoutResult, type StatusResult } from "./service.js";
 
@@ -32,7 +33,7 @@ export class AuthyClient implements ClientBackend {
   listAccounts(input: AccountListInput = {}): Promise<AccountListResult> { return this.delegate.listAccounts(input); }
   getAccountSummary(input: { count?: boolean; activeAccountId?: boolean } = {}): Promise<AccountSummary> { return this.delegate.getAccountSummary(input); }
   getAccountStatus(accountId: string, signal?: AbortSignal): Promise<StatusResult> { return this.delegate.getAccountStatus(accountId, signal); }
-  execute(input: ExecuteInput, onEvent?: EventSink): Promise<ExecuteResult> { return this.delegate.execute(input, onEvent); }
+  execute(input: ExecuteInput, onEvent?: EventSink): Promise<ExecuteResult> { validateWorkspaceInput(input); return this.delegate.execute(input, onEvent); }
 }
 
 class ApiBackend implements ClientBackend {
@@ -47,7 +48,7 @@ class ApiBackend implements ClientBackend {
   listAccounts(input: AccountListInput = {}): Promise<AccountListResult> { return this.json(`/v1/accounts${query({ skip: input.skip, take: input.take, filter: input.filter })}`); }
   getAccountSummary(input: { count?: boolean; activeAccountId?: boolean } = {}): Promise<AccountSummary> { return this.json(`/v1/accounts/summary${query(input)}`); }
   getAccountStatus(accountId: string, signal?: AbortSignal): Promise<StatusResult> { return this.json(`/v1/accounts/${encodeURIComponent(accountId)}/status`, { signal }); }
-  execute(input: ExecuteInput, onEvent?: EventSink): Promise<ExecuteResult> { return this.stream("/v1/exec", { accountId: input.accountId, prompt: input.prompt, detailLevel: input.detailLevel, timeoutMs: input.timeoutMs }, input.signal, onEvent); }
+  execute(input: ExecuteInput, onEvent?: EventSink): Promise<ExecuteResult> { return this.stream("/v1/exec", { accountId: input.accountId, prompt: input.prompt, detailLevel: input.detailLevel, timeoutMs: input.timeoutMs, workspace: input.workspace, readonly: input.readonly }, input.signal, onEvent); }
   private async json<T>(path: string, init: RequestInit = {}): Promise<T> { const value = await jsonResponse<T>(await this.fetch(path, init)); if (!value.ok) throw apiError(value.error); return value.data; }
   private async stream<T>(path: string, body: Record<string, unknown>, signal: AbortSignal | undefined, onEvent?: EventSink): Promise<T> {
     const response = await this.fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal });
@@ -67,7 +68,7 @@ class CliBackend implements ClientBackend {
   listAccounts(input: AccountListInput = {}): Promise<AccountListResult> { return this.run(["accounts", "list", ...(input.skip !== undefined ? ["--skip", String(input.skip)] : []), ...(input.take !== undefined ? ["--take", String(input.take)] : []), ...(input.filter ? ["--filter", input.filter] : [])]); }
   getAccountSummary(input: { count?: boolean; activeAccountId?: boolean } = {}): Promise<AccountSummary> { return this.run(["accounts", "summary", ...(input.count ? ["--count"] : []), ...(input.activeAccountId ? ["--active-account-id"] : [])]); }
   getAccountStatus(accountId: string, signal?: AbortSignal): Promise<StatusResult> { return this.run(["accounts", "status", "--account-id", accountId], signal); }
-  execute(input: ExecuteInput, onEvent?: EventSink): Promise<ExecuteResult> { return this.run(["exec", "--account-id", input.accountId, "--prompt", input.prompt, ...(input.detailLevel ? ["--detail-level", input.detailLevel] : []), ...(input.timeoutMs !== undefined ? ["--timeout-ms", String(input.timeoutMs)] : [])], input.signal, onEvent); }
+  execute(input: ExecuteInput, onEvent?: EventSink): Promise<ExecuteResult> { return this.run(["exec", "--account-id", input.accountId, "--prompt", input.prompt, ...(input.detailLevel ? ["--detail-level", input.detailLevel] : []), ...(input.timeoutMs !== undefined ? ["--timeout-ms", String(input.timeoutMs)] : []), ...(input.workspace !== undefined ? ["--workspace", input.workspace] : []), ...(input.readonly ? ["--readonly"] : [])], input.signal, onEvent); }
   private run<T>(args: string[], signal?: AbortSignal, onEvent?: EventSink): Promise<T> {
     if (signal?.aborted) return Promise.reject(new OperationCancelledError("The operation was cancelled."));
     return new Promise((resolve, reject) => {

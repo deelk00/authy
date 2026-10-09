@@ -59,7 +59,7 @@ export interface CreateContainerInput {
   command?: string[];
   environment?: string[];
   labels?: Record<string, string>;
-  volumes?: Array<{ source: string; target: string; readOnly?: boolean }>;
+  volumes?: Array<{ source: string; target: string; readOnly?: boolean; type?: "volume" | "bind" }>;
   networkMode?: string;
 }
 
@@ -121,7 +121,7 @@ export class DockerService {
               Privileged: false,
               NetworkMode: input.networkMode ?? "none",
               Mounts: input.volumes.map((volume) => ({
-                Type: "volume",
+                Type: volume.type ?? "volume",
                 Source: volume.source,
                 Target: volume.target,
                 ReadOnly: volume.readOnly ?? false

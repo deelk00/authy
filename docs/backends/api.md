@@ -16,3 +16,14 @@ Netzwerk-Authentisierung. Alle Routen beginnen mit `/v1`: `POST /login`,
 Namen, `result` enthält das Abschlussresultat und `error` einen sicheren Fehler.
 Die übrigen Routen liefern `{ "ok": true, "data": ... }`; Fehler verwenden
 `{ "ok": false, "error": { "code", "message" } }`.
+
+`POST /v1/exec` akzeptiert zusätzlich `workspace` (String: lokaler
+Verzeichnispfad oder `file://`-URL) und `readonly` (Boolean, Standard `false`):
+
+```json
+{"accountId":"ada","prompt":"Prüfe den Code","workspace":"file:///projects/repo","readonly":true}
+```
+
+Der Workspace wird auf dem API-Server aufgelöst. Ohne `workspace` sind Dateitools
+deaktiviert; andernfalls wird er lesend/schreibend oder bei `readonly: true`
+schreibgeschützt eingebunden. Siehe [`authy exec`](../commands/exec.md).

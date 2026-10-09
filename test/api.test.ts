@@ -13,13 +13,32 @@ const service: AuthyService = {
   execute: async (_input, onEvent) => { onEvent?.({ event: "exec.turn.started", data: { threadId: "thread_1" } }); return { requestId: "request_1", accountId: "ada", exitCode: 0, output: "Done." }; }
 };
 
-async function withServer(action: (baseUrl: string) => Promise<void>): Promise<void> {
-  const server = createAuthyApiServer(service, { port: 0 });
+async function withServer(action: (baseUrl: string) => Promise<void>, instance: AuthyService = service): Promise<void> {
+  const server = createAuthyApiServer(instance, { port: 0 });
   const address = await server.listen();
   try { await action(`http://${address.host}:${address.port}`); } finally { await server.close(); }
 }
 
 describe("Authy HTTP API", () => {
+  it("passes workspace access options and rejects incorrect field types", async () => {
+    let received: Parameters<AuthyService["execute"]>[0] | undefined;
+    const capturingService: AuthyService = { ...service, execute: async (input) => {
+      received = input;
+      return { requestId: "request", accountId: input.accountId, exitCode: 0, output: "Done." };
+    } };
+    await withServer(async (baseUrl) => {
+      const post = (body: unknown) => fetch(`${baseUrl}/v1/exec`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const response = await post({ accountId: "ada", prompt: "test", workspace: "file:///projects/repo", readonly: true });
+      assert.match(await response.text(), /event: result/);
+      assert.equal(received?.workspace, "file:///projects/repo");
+      assert.equal(received?.readonly, true);
+      for (const fields of [{ workspace: 123 }, { workspace: "" }, { readonly: "true" }]) {
+        const invalid = await post({ accountId: "ada", prompt: "test", ...fields });
+        assert.equal(invalid.status, 400);
+        assert.equal((await invalid.json() as { error: { code: string } }).error.code, "INVALID_USAGE");
+      }
+    }, capturingService);
+  });
   it("serves account resources and stable JSON errors", async () => withServer(async (baseUrl) => {
     const accounts = await fetch(`${baseUrl}/v1/accounts?idsOnly=true`);
     assert.equal(accounts.status, 200);

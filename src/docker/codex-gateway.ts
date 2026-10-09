@@ -6,6 +6,7 @@ import {
   RuntimeError
 } from "../errors.js";
 import type { CodexGateway, ExecuteOutputEvent, LoginProgress, RateLimit, RateLimitWindow, StatusResult, TokenUsage } from "../service.js";
+import type { ResolvedWorkspace } from "../workspace.js";
 import {
   authyLabels,
   authyContainerName,
@@ -139,6 +140,7 @@ export class DockerCodexGateway implements CodexGateway {
       prompt: string;
       detailLevel: DetailLevel;
       timeoutMs: number;
+      workspace?: ResolvedWorkspace;
       signal?: AbortSignal;
     },
     onOutput: (event: ExecuteOutputEvent) => void
@@ -146,11 +148,6 @@ export class DockerCodexGateway implements CodexGateway {
     const accountId = validateAccountId(input.accountId);
     const requestId = randomUUID();
     const docker = await this.getRuntime();
-    const workspaceVolumeName = `authy-workspace-${accountId}`;
-    await docker.createVolume({
-      name: workspaceVolumeName,
-      labels: { "com.authy.managed": "true", "com.authy.account-id": accountId }
-    });
     const container = await docker.runEphemeral({
       image: this.config.codexImage,
       name: authyContainerName("exec", requestId),
@@ -159,7 +156,12 @@ export class DockerCodexGateway implements CodexGateway {
       labels: authyLabels(requestId, accountId),
       volumes: [
         { source: this.config.authVolumeName, target: "/codex-auth", readOnly: false },
-        { source: workspaceVolumeName, target: "/workspace", readOnly: false }
+        ...(input.workspace ? [{
+          type: "bind" as const,
+          source: input.workspace.source,
+          target: "/workspace",
+          readOnly: input.workspace.readOnly
+        }] : [])
       ],
       networkMode: this.config.networkMode
     }, input.signal);
@@ -168,9 +170,10 @@ export class DockerCodexGateway implements CodexGateway {
       const events = new CodexEventCollector(input.detailLevel, onOutput);
       const command = await docker.executeCommand({
         containerId: container.containerId,
-        command: codexExecCommand(input.timeoutMs, input.prompt),
+        command: codexExecCommand(input.timeoutMs, input.prompt, input.workspace),
         environment: [`CODEX_HOME=/codex-auth/${accountId}`],
         workingDirectory: "/workspace",
+        user: "authy",
         onStdout: (chunk) => events.push(chunk)
       });
       if (!events.receivedStream) events.push(command.stdout);
@@ -366,11 +369,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function codexExecCommand(timeoutMs: number, prompt: string): string[] {
+function codexExecCommand(timeoutMs: number, prompt: string, workspace?: ResolvedWorkspace): string[] {
   const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1_000));
+  const sandbox = workspace && !workspace.readOnly ? "workspace-write" : "read-only";
+  const noFileTools = workspace ? "" : [
+    "features.shell_tool=false",
+    "features.unified_exec=false",
+    "features.apply_patch_freeform=false",
+    "features.js_repl=false",
+    "features.multi_agent=false",
+    "tools.view_image=false"
+  ].map((setting) => `-c ${quoteForPosixShell(setting)}`).join(" ");
   return [
     "sh", "-c",
-    "exec timeout --signal=TERM \"$1\" codex exec --json --sandbox workspace-write --skip-git-repo-check \"$2\"",
+    // Copy only credentials into an ephemeral home, never account config/MCP
+    // tools which could bypass the selected filesystem mode.
+    'set -eu; authy_credentials="$CODEX_HOME/auth.json"; authy_home=$(mktemp -d /tmp/authy-codex.XXXXXX); cp -- "$CODEX_HOME/auth.json" "$authy_home/auth.json"; export CODEX_HOME="$authy_home"; '
+      + `set +e; timeout --signal=TERM "$1" codex --ask-for-approval never exec --json --sandbox ${sandbox} ${noFileTools} --skip-git-repo-check -- "$2"; `
+      + 'authy_status=$?; set -e; authy_updated=$(mktemp "${authy_credentials}.XXXXXX"); cp -- "$CODEX_HOME/auth.json" "$authy_updated"; mv -- "$authy_updated" "$authy_credentials"; exit "$authy_status"',
     "authy-exec",
     `${timeoutSeconds}s`,
     prompt

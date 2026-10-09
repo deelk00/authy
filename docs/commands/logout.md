@@ -14,7 +14,7 @@ authy logout --account-id <id>
 | `--account-id <id>` | Erforderliche, validierte ID des abzumeldenden Accounts. |
 
 Die ID muss existieren. Bei Erfolg enthält die Antwort `loggedOut: true`. Der
-accountbezogene Workspace wird nicht gelöscht.
+explizit angegebene Host-Workspace sowie frühere Workspace-Volumes werden nicht gelöscht.
 
 ## Interner Ablauf
 

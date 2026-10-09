@@ -171,7 +171,7 @@ describe("DockerCodexGateway", () => {
     const end = await run("end");
 
     assert.deepEqual(commands[0]?.command.slice(0, 2), ["sh", "-c"]);
-    assert.match(commands[0]?.command[2] ?? "", /--sandbox workspace-write/);
+    assert.match(commands[0]?.command[2] ?? "", /--sandbox read-only/);
     assert.equal(commands[0]?.command.at(-2), "1s");
     assert.equal(commands[0]?.command.at(-1), "Run tests");
     assert.equal(verbose.streamed.length, 7);
@@ -198,5 +198,56 @@ describe("DockerCodexGateway", () => {
     assert.deepEqual(turns, { result: { exitCode: 0, output: "Task completed." }, streamed: [{ type: "turn.started", data: { thread_id: "thread_1" } }, { type: "turn.completed", data: { usage: { input_tokens: 12, output_tokens: 4 } } }, { type: "final", data: { text: "Task completed." } }] });
     assert.deepEqual(end, { result: { exitCode: 0, output: "Task completed." }, streamed: [] });
     assert.deepEqual(removed, ["exec-container", "exec-container", "exec-container", "exec-container"]);
+  });
+});
+
+describe("Docker workspace access", () => {
+  for (const mode of ["none", "write", "read"] as const) {
+    it(`enforces ${mode} workspace access and cleans up the container`, async () => {
+      let runInput: Parameters<DockerRuntime["runEphemeral"]>[0] | undefined;
+      let command: Parameters<DockerRuntime["executeCommand"]>[0] | undefined;
+      const volumes: string[] = [];
+      const removed: string[] = [];
+      const runtime: DockerRuntime = {
+        createVolume: async ({ name }) => { volumes.push(name); },
+        runEphemeral: async (input) => { runInput = input; return { containerId: "exec" }; },
+        executeCommand: async (input) => { command = input; return { stdout: "", stderr: "", exitCode: 0 }; },
+        removeContainer: async (id) => { removed.push(id); }
+      };
+      const workspace = mode === "none" ? undefined : { source: "/host/project with spaces", readOnly: mode === "read" };
+      await new DockerCodexGateway(defaultConfig(), async () => runtime).execute({
+        accountId: "ada", prompt: "test", detailLevel: "end", timeoutMs: 1_000, workspace
+      }, () => undefined);
+      assert.deepEqual(volumes, []);
+      assert.deepEqual(runInput?.volumes?.filter((mount) => mount.target === "/workspace"), workspace ? [{
+        type: "bind", source: workspace.source, target: "/workspace", readOnly: workspace.readOnly
+      }] : []);
+      assert.equal(command?.workingDirectory, "/workspace");
+      assert.equal(command?.user, "authy");
+      const script = command?.command[2] ?? "";
+      assert.match(script, mode === "write" ? /--sandbox workspace-write/ : /--sandbox read-only/);
+      assert.match(script, /--ask-for-approval never/);
+      assert.match(script, /cp -- "\$CODEX_HOME\/auth.json"/);
+      assert.match(script, /mv -- "\$authy_updated" "\$authy_credentials"; exit "\$authy_status"/);
+      for (const flag of ["features.shell_tool=false", "features.unified_exec=false", "features.apply_patch_freeform=false", "features.js_repl=false", "features.multi_agent=false", "tools.view_image=false"]) {
+        assert.equal(script.includes(flag), mode === "none");
+      }
+      assert.deepEqual(removed, ["exec"]);
+    });
+  }
+
+  it("removes the container after execution fails", async () => {
+    const removed: string[] = [];
+    const runtime: DockerRuntime = {
+      createVolume: async () => undefined,
+      runEphemeral: async () => ({ containerId: "failed-exec" }),
+      executeCommand: async () => { throw new Error("failed"); },
+      removeContainer: async (id) => { removed.push(id); }
+    };
+    await assert.rejects(new DockerCodexGateway(defaultConfig(), async () => runtime).execute({
+      accountId: "ada", prompt: "test", detailLevel: "end", timeoutMs: 1_000,
+      workspace: { source: "/host/repo", readOnly: true }
+    }, () => undefined));
+    assert.deepEqual(removed, ["failed-exec"]);
   });
 });
