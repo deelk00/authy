@@ -19,7 +19,7 @@
     "docker:build": "docker build --tag authy-codex:local .",
     "start": "npm run build && node dist/authy.js",
     "test": "tsc -p tsconfig.test.json && node --test dist-test/test/**/*.test.js",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit --incremental --tsBuildInfoFile node_modules/.cache/authy/check.tsbuildinfo"
   },
   "dependencies": {
     "@docker/node-sdk": "^0.0.17",

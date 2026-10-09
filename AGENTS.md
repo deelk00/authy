@@ -53,4 +53,12 @@
 - Gib für relevante Operationen genügend Kontext für Diagnose und Monitoring zurück, ohne Zugangsdaten, Tokens oder andere Geheimnisse auszugeben oder zu protokollieren.
 - Behandle Ressourcen bewusst: Für angelegte Container, Volumes, Streams und Verbindungen muss klar sein, wer ihre Lebensdauer steuert und wie Fehlerfälle aufgeräumt werden.
 - Verzichte auf versteckte globale Konfiguration. Ermögliche explizite Konfiguration und sichere Defaults; begrenze Berechtigungen und Eingaben besonders an Infrastrukturgrenzen wie Docker.
-- Vor dem Abschluss eines Changes mindestens Typcheck, relevante Tests und Build ausführen, soweit die lokale Umgebung dies zulässt. Nicht erreichbare externe Dienste sind kein Grund, Tests ohne Ersatzprüfung zu überspringen.
+
+## Abschluss eines Auftrags
+
+- Prüfe vor dem Abschluss, ob die Änderungen Auswirkungen auf die Dokumentation haben, und aktualisiere die betroffenen Stellen. Passe bei Änderungen an Konfiguration oder Persistenz auch `.env.example` an, soweit vorhanden oder erforderlich.
+- Führe bei jedem Auftrag vor dem Abschluss `npm run check` aus. Der Befehl prüft ausschließlich die TypeScript-Typen, erzeugt keine Build-Ausgaben und führt keine Tests aus. Er nutzt einen inkrementellen Cache unter `node_modules/.cache/authy/`, um wiederholte Aufrufe ressourcensparend zu halten; externe Typdeklarationen werden dank `skipLibCheck` nicht separat geprüft.
+- Führe bei Codeänderungen zusätzlich relevante Tests und den Build aus, soweit die lokale Umgebung dies zulässt. Nicht erreichbare externe Dienste sind kein Grund, Tests ohne Ersatzprüfung zu überspringen.
+- Committe nicht, wenn `npm run check` oder eine andere erforderliche Prüfung fehlschlägt. Berichte über Prüfungen, die nicht ausgeführt werden konnten, und nenne den Grund.
+- Prüfe mit `git status` die ausstehenden Änderungen. Nimm nur die zum Auftrag gehörenden Änderungen mit `git add` auf; verwende `git add .` nur, wenn alle ausstehenden Änderungen geprüft wurden und zum Auftrag gehören.
+- Committe abgeschlossene Änderungen im Format `<type>: <description>`. Zulässige Typen sind `build`, `chore`, `ci`, `docs`, `feature`, `fix`, `perf`, `refactor`, `revert`, `security`, `style` und `test`. Formuliere die Beschreibung kurz und konkret.
